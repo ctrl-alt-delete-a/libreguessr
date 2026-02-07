@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LibreGuessr - Custom Area</title>
+    
+    <link href="https://unpkg.com/mapillary-js@4.1.0/dist/mapillary.css" rel="stylesheet" />
+    <link href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" rel="stylesheet" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css" rel="stylesheet" />
+    
+    <style>
+        /* Base Layout */
+        body {
+            margin: 0;
+            display: flex;
+            height: 100vh;
+            font-family: sans-serif;
+            background: #000;
+            color: white;
+            overflow: hidden;
+        }
+
+        #mly {
+            flex: 1;
+            background: #111;
+        }
+        
+        /* Setup Overlay */
+        #setup-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 2000;
+            background: rgba(0, 0, 0, 0.9);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #setup-overlay h2 {
+            margin-bottom: 20px;
+            font-size: 24px;
+        }
+
+        #setup-map {
+            width: 85%;
+            height: 70%;
+            border: 2px solid #05cb63;
+            border-radius: 15px;
+        }
+
+        #start-btn {
+            background: #05cb63;
+            margin-top: 20px;
+            padding: 15px 30px;
+            border-radius: 10px;
+            color: white;
+            font-size: 18px;
+            font-weight: bold;
+            border: none;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        #start-btn:hover {
+            background: #04b558;
+        }
+
+        /* Game Controls */
+        .game-controls {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            z-index: 1000;
+            display: none;
+            flex-direction: column;
+            width: 350px;
+        }
+
+        .score-panel {
+            background: rgba(0, 0, 0, 0.9);
+            padding: 12px;
+            border-radius: 15px 15px 0 0;
+            border: 2px solid #05cb63;
+            border-bottom: none;
+            text-align: center;
+        }
+
+        #status {
+            font-size: 14px;
+            margin-bottom: 5px;
+        }
+
+        #score-display {
+            font-size: 26px;
+            font-weight: bold;
+            color: #05cb63;
+        }
+
+        /* Game Map */
+        #game-map {
+            height: 250px;
+            border: 2px solid #05cb63;
+            border-top: none;
+            border-bottom: none;
+            transition: height 0.3s ease;
+            cursor: crosshair;
+        }
+
+        #game-map:hover {
+            height: 450px;
+        }
+
+        /* Buttons */
+        .game-btn {
+            padding: 15px;
+            border: 2px solid #05cb63;
+            border-top: none;
+            border-radius: 0 0 15px 15px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 16px;
+            color: white;
+            width: 100%;
+            transition: opacity 0.3s;
+        }
+
+        #guess-btn {
+            background: #05cb63;
+        }
+
+        #guess-btn:hover {
+            opacity: 0.9;
+        }
+
+        #next-btn {
+            background: #333;
+            display: none;
+        }
+
+        #next-btn:hover {
+            background: #444;
+        }
+    </style>
+</head>
+<body>
+    <div id="setup-overlay">
+        <h2>Draw your areas on the map (Polygon/Rectangle)</h2>
+        <div id="setup-map"></div>
+        <button id="start-btn">START GAME</button>
+    </div>
+
+    <div id="mly"></div>
+
+    <div class="game-controls" id="game-ui">
+        <div class="score-panel">
+            <div id="status">Find the location!</div>
+            <div id="score-display">0 / 5000</div>
+        </div>
+        <div id="game-map"></div>
+        <button id="guess-btn" class="game-btn">GUESS (SPACE)</button>
+        <button id="next-btn" class="game-btn">NEXT ROUND (SPACE)</button>
+    </div>
+
+    <script src="https://unpkg.com/mapillary-js@4.1.0/dist/mapillary.js"></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+    <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
+
+    <script>
+        // ============================================
+        // CONSTANTS & GLOBAL VARIABLES
+        // ============================================
+        const MAPILLARY_TOKEN = 'MLY|25743633725330165|712198b2f493b8fefd39f64d36578362';
+        const MAX_SCORE = 5000;
+        const DISTANCE_FACTOR = 3000;
+        const PERFECT_DISTANCE = 20;
+        const MAX_ATTEMPTS = 100;
+        const SEARCH_RADIUS = 0.005;
+        const IMAGE_LIMIT = 5;
+
+        let mapillaryViewer = null;
+        let gameMap = null;
+        let setupMap = null;
+        let guessMarker = null;
+        let actualLocation = null;
+        let drawnAreas = new L.FeatureGroup();
+
+        // ============================================
+        // SETUP MAP INITIALIZATION
+        // ============================================
+        function initializeSetupMap() {
+            setupMap = L.map('setup-map', {
+                minZoom: 2,
+                worldCopyJump: true
+            }).setView([20, 0], 2);
+
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                noWrap: false,
+                attribution: '© OpenStreetMap contributors'
+            }).addTo(setupMap);
+
+            setupMap.addLayer(drawnAreas);
+
+            // Drawing controls
+            const drawControl = new L.Control.Draw({
+                draw: {
+                    polygon: true,
+                    rectangle: true,
+                    polyline: false,
+                    circle: false,
+                    marker: false,
+                    circlemarker: false
+                },
+                edit: {
+                    featureGroup: drawnAreas
+                }
+            });
+            setupMap.addControl(drawControl);
+
+            // Event listener for drawn shapes
+            setupMap.on(L.Draw.Event.CREATED, (event) => {
+                drawnAreas.addLayer(event.layer);
+            });
+        }
+
+        // ============================================
+        // GAME INITIALIZATION
+        // ============================================
+        function startGame() {
+            if (drawnAreas.getLayers().length === 0) {
+                alert("Please draw at least one area!");
+                return;
+            }
+            
+            // Hide setup, show game UI
+            document.getElementById('setup-overlay').style.display = 'none';
+            document.getElementById('game-ui').style.display = 'flex';
+            
+            // Initialize game map
+            initializeGameMap();
+            
+            // Load first round
+            loadRound();
+        }
+
+        function initializeGameMap() {
+            gameMap = L.map('game-map');
+            
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap contributors'
+            }).addTo(gameMap);
+
+            // Center on drawn areas
+            const bounds = drawnAreas.getBounds();
+            gameMap.fitBounds(bounds, { padding: [20, 20] });
+
+            // Click handler for guessing
+            gameMap.on('click', handleMapClick);
+        }
+
+        function handleMapClick(event) {
+            if (document.getElementById('guess-btn').style.display === "none") {
+                return;
+            }
+            
+            // Remove previous guess marker
+            if (guessMarker) {
+                gameMap.removeLayer(guessMarker);
+            }
+            
+            // Add new guess marker
+            guessMarker = L.marker(event.latlng).addTo(gameMap);
+        }
+
+        // ============================================
+        // ROUND MANAGEMENT
+        // ============================================
+        async function loadRound() {
+            const geojson = drawnAreas.toGeoJSON();
+            const bbox = turf.bbox(geojson);
+            
+            // Find random point within drawn areas
+            const randomPoint = findRandomPointInAreas(bbox, geojson);
+            if (!randomPoint) {
+                console.error("Could not find valid point");
+                return;
+            }
+
+            // Fetch nearby Mapillary image
+            const imageData = await fetchNearbyImage(randomPoint);
+            if (!imageData) {
+                loadRound(); // Try again
+                return;
+            }
+
+            // Load image in viewer
+            loadMapillaryImage(imageData);
+        }
+
+        function findRandomPointInAreas(bbox, geojson) {
+            let attempts = 0;
+            
+            while (attempts < MAX_ATTEMPTS) {
+                const lng = bbox[0] + Math.random() * (bbox[2] - bbox[0]);
+                const lat = bbox[1] + Math.random() * (bbox[3] - bbox[1]);
+                const point = turf.point([lng, lat]);
+                
+                // Check if point is within any drawn polygon
+                for (let feature of geojson.features) {
+                    if (turf.booleanPointInPolygon(point, feature)) {
+                        return point;
+                    }
+                }
+                
+                attempts++;
+            }
+            
+            return null;
+        }
+
+        async function fetchNearbyImage(point) {
+            const [lon, lat] = point.geometry.coordinates;
+            const url = `https://graph.mapillary.com/images?access_token=${MAPILLARY_TOKEN}&fields=id,geometry&bbox=${lon - SEARCH_RADIUS},${lat - SEARCH_RADIUS},${lon + SEARCH_RADIUS},${lat + SEARCH_RADIUS}&limit=${IMAGE_LIMIT}`;
+            
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                if (!data.data || data.data.length === 0) {
+                    return null;
+                }
+                
+                // Pick random image from results
+                const randomImage = data.data[Math.floor(Math.random() * data.data.length)];
+                return randomImage;
+            } catch (error) {
+                console.error("Error fetching image:", error);
+                return null;
+            }
+        }
+
+        function loadMapillaryImage(imageData) {
+            actualLocation = [
+                imageData.geometry.coordinates[1],
+                imageData.geometry.coordinates[0]
+            ];
+            
+            if (mapillaryViewer) {
+                mapillaryViewer.moveTo(imageData.id);
+            } else {
+                mapillaryViewer = new mapillary.Viewer({
+                    accessToken: MAPILLARY_TOKEN,
+                    container: 'mly',
+                    imageId: imageData.id
+                });
+            }
+        }
+
+        function nextRound() {
+            // Clear markers and lines
+            clearGameMapLayers();
+            
+            // Reset UI
+            resetUI();
+            
+            // Zoom back to drawn areas
+            const bounds = drawnAreas.getBounds();
+            gameMap.fitBounds(bounds, { padding: [20, 20] });
+            
+            // Load new round
+            loadRound();
+        }
+
+        function clearGameMapLayers() {
+            if (guessMarker) {
+                gameMap.removeLayer(guessMarker);
+                guessMarker = null;
+            }
+            
+            gameMap.eachLayer((layer) => {
+                if (layer instanceof L.CircleMarker || layer instanceof L.Polyline) {
+                    gameMap.removeLayer(layer);
+                }
+            });
+        }
+
+        function resetUI() {
+            document.getElementById('guess-btn').style.display = 'block';
+            document.getElementById('next-btn').style.display = 'none';
+            document.getElementById('status').innerText = "Find the location!";
+            document.getElementById('score-display').innerText = `0 / ${MAX_SCORE}`;
+        }
+
+        // ============================================
+        // GUESS CHECKING
+        // ============================================
+        function checkGuess() {
+            if (!guessMarker) {
+                alert("Click on the map to guess!");
+                return;
+            }
+            
+            const guessLatLng = guessMarker.getLatLng();
+            const actualLatLng = L.latLng(actualLocation);
+            const distance = Math.round(actualLatLng.distanceTo(guessLatLng));
+            const score = calculateScore(distance);
+            
+            // Update UI
+            displayResults(score, distance);
+            
+            // Show answer on map
+            showAnswerOnMap(guessLatLng, actualLatLng);
+            
+            // Switch buttons
+            document.getElementById('guess-btn').style.display = 'none';
+            document.getElementById('next-btn').style.display = 'block';
+        }
+
+        function calculateScore(distance) {
+            if (distance < PERFECT_DISTANCE) {
+                return MAX_SCORE;
+            }
+            return Math.round(MAX_SCORE * Math.exp(-distance / DISTANCE_FACTOR));
+        }
+
+        function displayResults(score, distance) {
+            document.getElementById('score-display').innerText = `${score} / ${MAX_SCORE}`;
+            document.getElementById('status').innerText = `Distance: ${distance}m`;
+        }
+
+        function showAnswerOnMap(guessLatLng, actualLatLng) {
+            // Red marker for actual location
+            L.circleMarker(actualLocation, {
+                color: 'red',
+                radius: 8
+            }).addTo(gameMap);
+            
+            // Dashed line between guess and actual
+            L.polyline([guessLatLng, actualLatLng], {
+                color: 'white',
+                weight: 2,
+                dashArray: '5,5'
+            }).addTo(gameMap);
+            
+            // Fit map to show both points
+            gameMap.fitBounds(
+                L.latLngBounds([guessLatLng, actualLatLng]),
+                { padding: [50, 50] }
+            );
+        }
+
+        // ============================================
+        // EVENT LISTENERS
+        // ============================================
+        document.getElementById('start-btn').addEventListener('click', startGame);
+        document.getElementById('guess-btn').addEventListener('click', checkGuess);
+        document.getElementById('next-btn').addEventListener('click', nextRound);
+
+        document.addEventListener('keydown', (event) => {
+            if (event.code === "Space") {
+                event.preventDefault();
+                
+                if (document.getElementById('guess-btn').style.display !== "none") {
+                    checkGuess();
+                } else if (document.getElementById('game-ui').style.display === "flex") {
+                    nextRound();
+                }
+            }
+        });
+
+        // ============================================
+        // INITIALIZE ON PAGE LOAD
+        // ============================================
+        initializeSetupMap();
+    </script>
+</body>
+</html>
